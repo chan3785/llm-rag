@@ -1,17 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-
-type Message = {
-  id: number;
-  text: string;
-  imageUrl?: string;
-};
+import { type Message, readAsDataUrl, streamChat } from "@/lib/chat";
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [image, setImage] = useState<{ file: File; url: string } | null>(null);
+  const [image, setImage] = useState<{ name: string; url: string } | null>(null);
+  const [isStreaming, setIsStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -19,30 +16,45 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
+  async function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (image) URL.revokeObjectURL(image.url);
-    setImage({ file, url: URL.createObjectURL(file) });
+    setImage({ name: file.name, url: await readAsDataUrl(file) });
   }
 
-  function removeImage() {
-    if (image) URL.revokeObjectURL(image.url);
-    setImage(null);
-  }
-
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     const text = input.trim();
-    if (!text && !image) return;
-    setMessages((prev) => [
-      ...prev,
-      { id: Date.now(), text, imageUrl: image?.url },
-    ]);
+    if ((!text && !image) || isStreaming) return;
+
+    const userMessage: Message = {
+      id: Date.now(),
+      role: "user",
+      text,
+      imageUrl: image?.url,
+    };
+    const assistantId = userMessage.id + 1;
+    const history = [...messages, userMessage];
+
+    setMessages([...history, { id: assistantId, role: "assistant", text: "" }]);
     setInput("");
-    // The object URL now belongs to the message, so don't revoke it here.
     setImage(null);
+    setError(null);
+    setIsStreaming(true);
+
+    try {
+      await streamChat(history, (delta) =>
+        setMessages((prev) =>
+          prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + delta } : m)),
+        ),
+      );
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setMessages((prev) => prev.filter((m) => m.id !== assistantId || m.text));
+    } finally {
+      setIsStreaming(false);
+    }
   }
 
   return (
@@ -58,20 +70,30 @@ export default function Home() {
           </p>
         )}
         {messages.map((m) => (
-          <div key={m.id} className="flex justify-end">
-            <div className="max-w-[80%] space-y-2 rounded-2xl bg-blue-600 px-4 py-2 text-white">
+          <div
+            key={m.id}
+            className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}
+          >
+            <div
+              className={`max-w-[80%] space-y-2 rounded-2xl px-4 py-2 ${
+                m.role === "user"
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-100 text-gray-900 dark:bg-white/10 dark:text-gray-100"
+              }`}
+            >
               {m.imageUrl && (
                 // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={m.imageUrl}
-                  alt="업로드한 이미지"
-                  className="max-h-64 rounded-lg"
-                />
+                <img src={m.imageUrl} alt="업로드한 이미지" className="max-h-64 rounded-lg" />
               )}
-              {m.text && <p className="whitespace-pre-wrap break-words">{m.text}</p>}
+              {m.text ? (
+                <p className="whitespace-pre-wrap break-words">{m.text}</p>
+              ) : (
+                m.role === "assistant" && <p className="animate-pulse text-gray-500">…</p>
+              )}
             </div>
           </div>
         ))}
+        {error && <p className="text-center text-sm text-red-600">{error}</p>}
         <div ref={bottomRef} />
       </section>
 
@@ -84,12 +106,12 @@ export default function Home() {
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img
               src={image.url}
-              alt={image.file.name}
+              alt={image.name}
               className="h-20 rounded-lg border border-black/10 object-cover"
             />
             <button
               type="button"
-              onClick={removeImage}
+              onClick={() => setImage(null)}
               aria-label="이미지 제거"
               className="absolute -right-2 -top-2 flex h-6 w-6 items-center justify-center rounded-full bg-gray-800 text-xs text-white"
             >
@@ -121,10 +143,10 @@ export default function Home() {
           />
           <button
             type="submit"
-            disabled={!input.trim() && !image}
+            disabled={isStreaming || (!input.trim() && !image)}
             className="shrink-0 rounded-full bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-40"
           >
-            전송
+            {isStreaming ? "응답 중" : "전송"}
           </button>
         </div>
       </form>

@@ -4,6 +4,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from qdrant_client import AsyncQdrantClient
 
 from app import db
 from app.config import settings
@@ -13,10 +14,10 @@ from app.llm import LlamaClient, get_llm
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.llm = LlamaClient(settings.llama_server_url, settings.llm_timeout_seconds)
-    db.init_db(settings.database_url)
+    app.state.qdrant = db.create_qdrant(settings.qdrant_url, settings.qdrant_api_key)
     yield
     await app.state.llm.close()
-    await db.close_db()
+    await app.state.qdrant.close()
 
 
 app = FastAPI(title="llm-rag server", lifespan=lifespan)
@@ -29,8 +30,11 @@ app.add_middleware(
 
 
 @app.get("/health")
-async def health(llm: LlamaClient = Depends(get_llm)):
-    return {"status": "ok", "llm": await llm.check(), "db": await db.check_db()}
+async def health(
+    llm: LlamaClient = Depends(get_llm),
+    qdrant: AsyncQdrantClient = Depends(db.get_qdrant),
+):
+    return {"status": "ok", "llm": await llm.check(), "db": await db.check_qdrant(qdrant)}
 
 
 @app.post("/v1/chat/completions")

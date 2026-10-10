@@ -25,13 +25,31 @@ def llama():
         yield mock
 
 
-def test_health_reports_llm_and_unconfigured_db(client, llama):
+@pytest.fixture
+def qdrant():
+    with respx.mock(base_url=settings.qdrant_url, assert_all_called=False) as mock:
+        yield mock
+
+
+def test_health_reports_llm_and_qdrant(client, llama, qdrant):
     llama.get("/health").respond(200, json={"status": "ok"})
+    qdrant.get("/collections").respond(
+        200, json={"result": {"collections": []}, "status": "ok", "time": 0.0}
+    )
 
     res = client.get("/health")
 
     assert res.status_code == 200
-    assert res.json() == {"status": "ok", "llm": "ok", "db": "not_configured"}
+    assert res.json() == {"status": "ok", "llm": "ok", "db": "ok"}
+
+
+def test_health_reports_qdrant_down(client, llama, qdrant):
+    llama.get("/health").respond(200, json={"status": "ok"})
+    qdrant.get("/collections").mock(side_effect=httpx.ConnectError("refused"))
+
+    res = client.get("/health")
+
+    assert res.json()["db"].startswith("error: ")
 
 
 def test_chat_streams_llama_response_through(client, llama):

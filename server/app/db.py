@@ -1,55 +1,21 @@
-from collections.abc import AsyncIterator
-
-from fastapi import HTTPException
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import (
-    AsyncEngine,
-    AsyncSession,
-    async_sessionmaker,
-    create_async_engine,
-)
-from sqlalchemy.orm import DeclarativeBase
+from fastapi import Request
+from qdrant_client import AsyncQdrantClient
 
 
-class Base(DeclarativeBase):
-    """Base class for ORM models. Define tables by subclassing this."""
+def create_qdrant(url: str, api_key: str | None) -> AsyncQdrantClient:
+    # Compatibility is checked by /health instead of a blocking request at startup.
+    return AsyncQdrantClient(url=url, api_key=api_key, check_compatibility=False)
 
 
-_engine: AsyncEngine | None = None
-_sessionmaker: async_sessionmaker[AsyncSession] | None = None
-
-
-def init_db(database_url: str | None) -> None:
-    global _engine, _sessionmaker
-    if not database_url:
-        return
-    _engine = create_async_engine(database_url, pool_pre_ping=True)
-    _sessionmaker = async_sessionmaker(_engine, expire_on_commit=False)
-
-
-async def close_db() -> None:
-    global _engine, _sessionmaker
-    if _engine is not None:
-        await _engine.dispose()
-    _engine = None
-    _sessionmaker = None
-
-
-async def check_db() -> str:
-    """Returns "ok", "not_configured", or "error: <reason>"."""
-    if _engine is None:
-        return "not_configured"
+async def check_qdrant(client: AsyncQdrantClient) -> str:
+    """Returns "ok" or "error: <reason>"."""
     try:
-        async with _engine.connect() as conn:
-            await conn.execute(text("SELECT 1"))
+        await client.get_collections()
         return "ok"
     except Exception as exc:
         return f"error: {exc.__class__.__name__}"
 
 
-async def get_session() -> AsyncIterator[AsyncSession]:
-    """FastAPI dependency: `session: AsyncSession = Depends(get_session)`."""
-    if _sessionmaker is None:
-        raise HTTPException(status_code=503, detail="Database is not configured (DATABASE_URL).")
-    async with _sessionmaker() as session:
-        yield session
+def get_qdrant(request: Request) -> AsyncQdrantClient:
+    """FastAPI dependency: `qdrant: AsyncQdrantClient = Depends(get_qdrant)`."""
+    return request.app.state.qdrant

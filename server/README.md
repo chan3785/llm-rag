@@ -1,10 +1,10 @@
 # llm-rag server
 
-FastAPI server that sits between the Next.js web app, llama-server and the database.
+FastAPI server that sits between the Next.js web app, llama-server and the Qdrant vector DB.
 
 ```
 Next.js (/api/chat) → FastAPI (:8000) → llama-server (:8080)
-                                      ↘ DB (DATABASE_URL)
+                                      ↘ Qdrant (:6333)
 ```
 
 ## Run
@@ -20,29 +20,28 @@ uv run uvicorn app.main:app --reload --port 8000
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/health` | Status of llama-server (`llm`) and the database (`db`: `ok` / `not_configured` / `error: ...`) |
+| GET | `/health` | Status of llama-server (`llm`) and Qdrant (`db`): `ok` / `error: ...` |
 | POST | `/v1/chat/completions` | OpenAI-compatible chat request, relayed to llama-server (streaming included) |
 
 API docs: http://localhost:8000/docs
 
-## Database
+## Qdrant
 
-The connection is set up in `app/db.py` and is skipped while `DATABASE_URL` is unset.
+The client is created in `app/db.py` and opened/closed with the app.
 
-1. Start the database (e.g. Postgres with Docker).
-2. Set `DATABASE_URL` in `.env`, e.g. `postgresql+asyncpg://postgres:postgres@localhost:5432/llm_rag`.
-   For another database, install its async driver and change the URL scheme.
+1. Start Qdrant from the repo root: `docker compose up -d` (dashboard: http://localhost:6333/dashboard).
+2. Set `QDRANT_URL` (and `QDRANT_API_KEY` if enabled) in `.env`. Default: `http://localhost:6333`.
 3. Check `GET /health` shows `"db": "ok"`.
-4. Define models by subclassing `app.db.Base`, and use a session in routes:
+4. Use the client in routes:
 
 ```python
 from fastapi import Depends
-from sqlalchemy.ext.asyncio import AsyncSession
-from app.db import get_session
+from qdrant_client import AsyncQdrantClient
+from app.db import get_qdrant
 
-@app.get("/items")
-async def list_items(session: AsyncSession = Depends(get_session)):
-    ...
+@app.get("/collections")
+async def list_collections(qdrant: AsyncQdrantClient = Depends(get_qdrant)):
+    return await qdrant.get_collections()
 ```
 
 ## Test

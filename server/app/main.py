@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 import httpx
@@ -6,15 +7,19 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from qdrant_client import AsyncQdrantClient
 
-from app import db
+from app import db, rag
 from app.config import settings
+from app.embedding import ClipEmbedder
 from app.llm import LlamaClient, get_llm
+
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     app.state.llm = LlamaClient(settings.llama_server_url, settings.llm_timeout_seconds)
     app.state.qdrant = db.create_qdrant(settings.qdrant_url, settings.qdrant_api_key)
+    app.state.clip = ClipEmbedder(settings.clip_model)
     yield
     await app.state.llm.close()
     await app.state.qdrant.close()
@@ -38,9 +43,23 @@ async def health(
 
 
 @app.post("/v1/chat/completions")
-async def chat_completions(request: Request, llm: LlamaClient = Depends(get_llm)):
-    """Relays an OpenAI-style chat request to llama-server, streaming the response as-is."""
+async def chat_completions(
+    request: Request,
+    llm: LlamaClient = Depends(get_llm),
+    qdrant: AsyncQdrantClient = Depends(db.get_qdrant),
+):
+    """Relays an OpenAI-style chat request to llama-server, streaming the response as-is.
+
+    If the conversation contains an image, similar stored images are looked up in Qdrant
+    and their descriptions are prepended as a system message.
+    """
     body = await request.json()
+    image_url = rag.find_last_image(body.get("messages", []))
+    if image_url:
+        context = await rag.build_context_message(image_url, request.app.state.clip, qdrant)
+        if context:
+            body["messages"] = [context, *body["messages"]]
+
     try:
         upstream = await llm.open_chat_stream(body)
     except httpx.HTTPError as exc:

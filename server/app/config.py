@@ -9,6 +9,13 @@ class Settings(BaseSettings):
 
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str | None = None
+    qdrant_collection: str = "images"
+
+    # Changing the model requires re-ingesting the collection.
+    clip_model: str = "clip-ViT-B-32"
+    rag_top_k: int = 3
+    # Cosine similarity cutoff; tune against your own data.
+    rag_score_threshold: float = 0.8
 
     cors_origins: list[str] = ["http://localhost:3000"]
 

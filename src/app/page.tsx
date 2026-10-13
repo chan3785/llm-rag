@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { type Message, readAsDataUrl, streamChat } from "@/lib/chat";
+import { AnswerSourceBadge } from "./answer-source-badge";
 
 export default function Home() {
   const [messages, setMessages] = useState<Message[]>([]);
@@ -44,10 +45,12 @@ export default function Home() {
     setIsStreaming(true);
 
     try {
-      await streamChat(history, (delta) =>
-        setMessages((prev) =>
-          prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + delta } : m)),
-        ),
+      const updateAssistant = (update: (m: Message) => Message) =>
+        setMessages((prev) => prev.map((m) => (m.id === assistantId ? update(m) : m)));
+      await streamChat(
+        history,
+        (delta) => updateAssistant((m) => ({ ...m, text: m.text + delta })),
+        (source) => updateAssistant((m) => ({ ...m, source })),
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -81,12 +84,13 @@ export default function Home() {
                   : "bg-gray-100 text-gray-900 dark:bg-white/10 dark:text-gray-100"
               }`}
             >
+              {m.source && <AnswerSourceBadge source={m.source} />}
               {m.imageUrl && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={m.imageUrl} alt="업로드한 이미지" className="max-h-64 rounded-lg" />
               )}
               {m.text ? (
-                <p className="whitespace-pre-wrap break-words">{m.text}</p>
+                <p className="whitespace-pre-wrap wrap-break-word">{m.text}</p>
               ) : (
                 m.role === "assistant" && <p className="animate-pulse text-gray-500">…</p>
               )}

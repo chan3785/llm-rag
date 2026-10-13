@@ -27,10 +27,12 @@ export async function POST(request: Request) {
     );
   }
 
-  return new Response(upstream.body, {
-    headers: {
-      "Content-Type": "text/event-stream",
-      "Cache-Control": "no-cache",
-    },
+  const headers = new Headers({
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
   });
+  const answerSource = upstream.headers.get("x-answer-source");
+  if (answerSource) headers.set("X-Answer-Source", answerSource);
+
+  return new Response(upstream.body, { headers });
 }

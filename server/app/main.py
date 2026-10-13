@@ -1,3 +1,4 @@
+import json
 import logging
 from contextlib import asynccontextmanager
 
@@ -50,15 +51,16 @@ async def chat_completions(
 ):
     """Relays an OpenAI-style chat request to llama-server, streaming the response as-is.
 
-    If the conversation contains an image, similar stored images are looked up in Qdrant
-    and their descriptions are prepended as a system message.
+    If the conversation contains an image, it is classified against the landmarks in Qdrant
+    and the result is prepended as a system message. Which stage decided the answer (RAG or
+    the VLM alone) and the similarity score are returned in the `X-Answer-Source` header.
     """
     body = await request.json()
-    image_url = rag.find_last_image(body.get("messages", []))
-    if image_url:
-        context = await rag.build_context_message(image_url, request.app.state.clip, qdrant)
-        if context:
-            body["messages"] = [context, *body["messages"]]
+    messages = body.get("messages", [])
+    source = await rag.analyze(messages, request.app.state.clip, qdrant)
+    context = rag.context_message(source)
+    body["messages"] = [*([context] if context else []), *rag.keep_latest_image(messages)]
+    body.setdefault("max_tokens", settings.llm_max_tokens)
 
     try:
         upstream = await llm.open_chat_stream(body)
@@ -79,4 +81,6 @@ async def chat_completions(
         relay(),
         status_code=upstream.status_code,
         media_type=upstream.headers.get("content-type", "application/json"),
+        # ensure_ascii keeps the header value ASCII-only (Korean landmark names are escaped).
+        headers={"X-Answer-Source": json.dumps(source.to_dict(), ensure_ascii=True)},
     )

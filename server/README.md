@@ -46,28 +46,57 @@ async def list_collections(qdrant: AsyncQdrantClient = Depends(get_qdrant)):
     return await qdrant.get_collections()
 ```
 
-## Ingest images (CLIP)
+## Ingest landmark images (CLIP)
 
-Put images in a folder. A sidecar `.txt` with the same name becomes the description
-the LLM sees (e.g. `cat.jpg` + `cat.txt`).
+One folder per landmark; the folder name is the label. An optional `_info.txt` in the folder
+is the landmark description given to the LLM.
+
+```
+data/landmarks/
+├── 경복궁/
+│   ├── _info.txt
+│   ├── 001.jpg
+│   └── ...
+└── 불국사/...
+```
 
 ```bash
-uv run python -m scripts.ingest ./data/images            # re-running updates the same files in place
-uv run python -m scripts.ingest ./data/images --recreate # drop and rebuild the collection
+uv run python -m scripts.ingest ./data/landmarks            # re-running updates the same files in place
+uv run python -m scripts.ingest ./data/landmarks --recreate # drop and rebuild the collection
 ```
 
 The first run downloads the CLIP model (~600 MB, cached in `~/.cache/huggingface`).
-Ingestion and chat must use the same `CLIP_MODEL`.
+Ingestion and chat must use the same `CLIP_MODEL`; after changing it, re-ingest with `--recreate`.
 
-## Retrieval at chat time
+## Classification at chat time
 
-When a chat request contains an image, `app/rag.py` embeds the most recent image,
-queries Qdrant (`RAG_TOP_K`, `RAG_SCORE_THRESHOLD`) and prepends the descriptions of matches
-as a system message. If nothing passes the threshold, or Qdrant/the collection is unavailable,
-the request is forwarded unchanged.
+When a chat request contains an image, `app/rag.py` embeds the most recent image and retrieves
+the `CLASSIFY_TOP_K` nearest reference images. Landmarks are compared by the mean similarity of
+their `CLASSIFY_PER_LANDMARK` closest images (`app/classify.py`), so landmarks with many photos
+don't win by volume. If the winner's best similarity is below `CLASSIFY_THRESHOLD`, the photo is
+treated as an unregistered place.
 
-`RAG_SCORE_THRESHOLD` is cosine similarity and depends on your data: CLIP scores unrelated
-photos of a similar style around 0.7–0.8. Check scores against real data and adjust.
+The result is prepended to the conversation as a system message, and returned in the
+`X-Answer-Source` response header, which the web app shows above each answer:
+
+| `stage` | `reason` | Meaning |
+|---|---|---|
+| `rag` | `matched` | A registered landmark matched; the answer is grounded in its description |
+| `vlm` | `below_threshold` | Closest landmark (`candidate`) scored below the threshold; the VLM answers on its own |
+| `vlm` | `no_image` / `no_reference_data` / `retrieval_failed` | No classification was possible |
+
+Only the latest image in the conversation is sent to the VLM (earlier ones are replaced by a
+placeholder), since small VLMs mix up multiple images and start repeating themselves.
+
+## Evaluate
+
+Keep held-out photos (not ingested) in the same layout, plus `_unknown/` for unregistered places:
+
+```bash
+uv run python -m scripts.evaluate ./data/eval
+```
+
+It prints per-image predictions and accuracy across thresholds to help pick `CLASSIFY_THRESHOLD`.
 
 ## Test
 

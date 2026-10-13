@@ -96,7 +96,8 @@ def test_chat_streams_llama_response_through(client, llama):
     assert res.status_code == 200
     assert res.headers["content-type"].startswith("text/event-stream")
     assert res.content == SSE_BODY
-    assert route.calls.last.request.read() == httpx.Request("POST", "/", json=payload).read()
+    sent = json.loads(route.calls.last.request.read())
+    assert sent == {**payload, "max_tokens": settings.llm_max_tokens}
 
 
 def test_chat_passes_through_llama_errors(client, llama):
@@ -124,35 +125,73 @@ def sent_messages(route) -> list[dict]:
     return json.loads(route.calls.last.request.read())["messages"]
 
 
-def test_chat_with_image_prepends_retrieved_context(client, llama, qdrant):
+def answer_source(res) -> dict:
+    return json.loads(res.headers["x-answer-source"])
+
+
+def qdrant_points(*points: tuple[float, str]) -> dict:
+    return {
+        "result": {
+            "points": [
+                {
+                    "id": i,
+                    "version": 0,
+                    "score": score,
+                    "payload": {"landmark": label, "description": f"{label} info"},
+                }
+                for i, (score, label) in enumerate(points)
+            ]
+        },
+        "status": "ok",
+        "time": 0.0,
+    }
+
+
+def test_chat_with_image_prepends_landmark_classification(client, llama, qdrant):
     llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
     qdrant_route = qdrant.post(QUERY_PATH).respond(
-        200,
-        json={
-            "result": {
-                "points": [
-                    {"id": 1, "version": 0, "score": 0.93, "payload": {"description": "orange cat"}},
-                    {"id": 2, "version": 0, "score": 0.85, "payload": {"description": ""}},
-                ]
-            },
-            "status": "ok",
-            "time": 0.0,
-        },
+        200, json=qdrant_points((0.93, "경복궁"), (0.90, "경복궁"), (0.88, "불국사"))
     )
 
     res = client.post("/v1/chat/completions", json={"messages": [image_message()], "stream": True})
 
     assert res.status_code == 200
-    query = json.loads(qdrant_route.calls.last.request.read())
-    assert query["limit"] == settings.rag_top_k
-    assert query["score_threshold"] == settings.rag_score_threshold
+    assert json.loads(qdrant_route.calls.last.request.read())["limit"] == settings.classify_top_k
     assert len(client.app.state.clip.images) == 1
 
     messages = sent_messages(llm_route)
     assert messages[0]["role"] == "system"
-    assert "- orange cat (similarity 0.93)" in messages[0]["content"]
-    assert "similarity 0.85" not in messages[0]["content"]
+    assert "'경복궁'(으)로 분류" in messages[0]["content"]
+    assert "유사도 0.93, 비슷한 사진 3장 중 2장" in messages[0]["content"]
+    assert "명소 정보: 경복궁 info" in messages[0]["content"]
     assert messages[1] == image_message()
+
+    assert answer_source(res) == {
+        "stage": "rag",
+        "reason": "matched",
+        "landmark": "경복궁",
+        "candidate": "경복궁",
+        "score": 0.93,
+        "threshold": settings.classify_threshold,
+        "votes": 2,
+        "total": 3,
+    }
+
+
+def test_chat_with_image_warns_llm_when_landmark_is_unknown(client, llama, qdrant):
+    llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
+    low = settings.classify_threshold - 0.1
+    qdrant.post(QUERY_PATH).respond(200, json=qdrant_points((low, "경복궁")))
+
+    res = client.post("/v1/chat/completions", json={"messages": [image_message()]})
+
+    source = answer_source(res)
+    assert (source["stage"], source["reason"]) == ("vlm", "below_threshold")
+    assert (source["landmark"], source["candidate"]) == (None, "경복궁")
+    system = sent_messages(llm_route)[0]
+    assert system["role"] == "system"
+    assert "어느 곳과도 충분히 비슷하지 않습니다" in system["content"]
+    assert "경복궁" not in system["content"]
 
 
 def test_chat_with_image_skips_context_when_nothing_matches(client, llama, qdrant):
@@ -161,9 +200,10 @@ def test_chat_with_image_skips_context_when_nothing_matches(client, llama, qdran
         200, json={"result": {"points": []}, "status": "ok", "time": 0.0}
     )
 
-    client.post("/v1/chat/completions", json={"messages": [image_message()]})
+    res = client.post("/v1/chat/completions", json={"messages": [image_message()]})
 
     assert sent_messages(llm_route) == [image_message()]
+    assert answer_source(res) == {"stage": "vlm", "reason": "no_reference_data"}
 
 
 def test_chat_with_image_still_works_when_retrieval_fails(client, llama, qdrant):
@@ -174,13 +214,48 @@ def test_chat_with_image_still_works_when_retrieval_fails(client, llama, qdrant)
 
     assert res.status_code == 200
     assert sent_messages(llm_route) == [image_message()]
+    assert answer_source(res) == {"stage": "vlm", "reason": "retrieval_failed"}
 
 
 def test_chat_without_image_skips_retrieval(client, llama, qdrant):
     llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
     qdrant_route = qdrant.post(QUERY_PATH)
 
-    client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+    res = client.post(
+        "/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]}
+    )
 
     assert not qdrant_route.called
     assert client.app.state.clip.images == []
+    assert answer_source(res) == {"stage": "vlm", "reason": "no_image"}
+
+
+def test_chat_sends_only_the_latest_image_to_the_vlm(client, llama, qdrant):
+    llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
+    qdrant.post(QUERY_PATH).respond(200, json=qdrant_points())
+    history = [
+        image_message("first"),
+        {"role": "assistant", "content": "answer"},
+        image_message("second"),
+    ]
+
+    client.post("/v1/chat/completions", json={"messages": history})
+
+    first, answer, second = sent_messages(llm_route)
+    assert first["content"] == [
+        {"type": "text", "text": "(이전에 올린 이미지)"},
+        {"type": "text", "text": "first"},
+    ]
+    assert answer == {"role": "assistant", "content": "answer"}
+    assert second == image_message("second")
+
+
+def test_chat_keeps_client_max_tokens(client, llama, qdrant):
+    llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
+
+    client.post(
+        "/v1/chat/completions",
+        json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 50},
+    )
+
+    assert json.loads(llm_route.calls.last.request.read())["max_tokens"] == 50

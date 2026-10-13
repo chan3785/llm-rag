@@ -1,13 +1,20 @@
-"""Embeds a folder of images with CLIP and upserts them into Qdrant.
+"""Embeds landmark reference images with CLIP and upserts them into Qdrant.
 
-Each image may have a sidecar text file with the same name (cat.jpg + cat.txt);
-its content is stored as the `description` given to the LLM at chat time.
+Layout: one folder per landmark; the folder name is the label.
 
-Usage: uv run python -m scripts.ingest <image-folder> [--recreate]
+    data/landmarks/
+    ├── 경복궁/
+    │   ├── _info.txt   (optional landmark description given to the LLM)
+    │   ├── 001.jpg
+    │   └── ...
+    └── 불국사/...
+
+Usage: uv run python -m scripts.ingest <landmarks-folder> [--recreate]
 """
 
 import argparse
 import uuid
+from collections import Counter
 from pathlib import Path
 
 from PIL import Image
@@ -28,6 +35,9 @@ def ensure_collection(client: QdrantClient, name: str, dimension: int, recreate:
             name,
             vectors_config=models.VectorParams(size=dimension, distance=models.Distance.COSINE),
         )
+        client.create_payload_index(
+            name, field_name="landmark", field_schema=models.PayloadSchemaType.KEYWORD
+        )
         return
     existing = client.get_collection(name).config.params.vectors.size
     if existing != dimension:
@@ -42,9 +52,22 @@ def point_id(path: Path) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, str(path.resolve())))
 
 
-def read_description(path: Path) -> str:
-    sidecar = path.with_suffix(".txt")
-    return sidecar.read_text(encoding="utf-8").strip() if sidecar.exists() else ""
+def find_images(root: Path) -> list[Path]:
+    paths = sorted(p for p in root.rglob("*") if p.suffix.lower() in EXTENSIONS)
+    misplaced = [p for p in paths if p.parent.resolve() == root.resolve()]
+    if misplaced:
+        raise SystemExit(
+            f"Put images inside a landmark folder (e.g. {root}/경복궁/{misplaced[0].name}); "
+            f"{len(misplaced)} image(s) are directly in {root}."
+        )
+    return paths
+
+
+def read_landmark(path: Path) -> tuple[str, str]:
+    """Returns (label, description) from the image's folder name and its _info.txt."""
+    info = path.parent / "_info.txt"
+    description = info.read_text(encoding="utf-8").strip() if info.exists() else ""
+    return path.parent.name, description
 
 
 def main() -> None:
@@ -53,7 +76,7 @@ def main() -> None:
     parser.add_argument("--recreate", action="store_true", help="drop and recreate the collection")
     args = parser.parse_args()
 
-    paths = sorted(p for p in args.folder.rglob("*") if p.suffix.lower() in EXTENSIONS)
+    paths = find_images(args.folder)
     if not paths:
         raise SystemExit(f"No images found in {args.folder}")
 
@@ -64,20 +87,18 @@ def main() -> None:
     for start in range(0, len(paths), BATCH_SIZE):
         batch = paths[start : start + BATCH_SIZE]
         vectors = clip.embed_images([Image.open(p).convert("RGB") for p in batch])
-        client.upsert(
-            settings.qdrant_collection,
-            points=[
-                models.PointStruct(
-                    id=point_id(p),
-                    vector=vector,
-                    payload={"path": str(p), "description": read_description(p)},
-                )
-                for p, vector in zip(batch, vectors)
-            ],
-        )
+        points = []
+        for p, vector in zip(batch, vectors):
+            landmark, description = read_landmark(p)
+            payload = {"landmark": landmark, "description": description, "path": str(p)}
+            points.append(models.PointStruct(id=point_id(p), vector=vector, payload=payload))
+        client.upsert(settings.qdrant_collection, points=points)
         print(f"{start + len(batch)}/{len(paths)} images ingested")
 
+    counts = Counter(p.parent.name for p in paths)
     print(f"Done: collection '{settings.qdrant_collection}' at {settings.qdrant_url}")
+    for landmark, n in sorted(counts.items()):
+        print(f"  {landmark}: {n}")
 
 
 if __name__ == "__main__":

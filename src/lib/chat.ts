@@ -1,8 +1,21 @@
+// Which stage decided the answer, sent by the API server in the X-Answer-Source header.
+export type AnswerSource = {
+  stage: "rag" | "vlm";
+  reason: "matched" | "below_threshold" | "no_image" | "no_reference_data" | "retrieval_failed";
+  landmark?: string | null;
+  candidate?: string | null;
+  score?: number;
+  threshold?: number;
+  votes?: number;
+  total?: number;
+};
+
 export type Message = {
   id: number;
   role: "user" | "assistant";
   text: string;
   imageUrl?: string;
+  source?: AnswerSource;
 };
 
 type ContentPart =
@@ -27,10 +40,12 @@ function toApiMessage(m: Message): ApiMessage {
   return { role: m.role, content: parts };
 }
 
-// Sends the conversation to /api/chat and calls onDelta with each streamed token.
+// Sends the conversation to /api/chat, reports the answer source once, then calls onDelta
+// with each streamed token.
 export async function streamChat(
   messages: Message[],
   onDelta: (text: string) => void,
+  onSource?: (source: AnswerSource) => void,
   signal?: AbortSignal,
 ) {
   const res = await fetch("/api/chat", {
@@ -44,6 +59,9 @@ export async function streamChat(
     const data = await res.json().catch(() => null);
     throw new Error(data?.error ?? `요청 실패 (${res.status})`);
   }
+
+  const source = res.headers.get("x-answer-source");
+  if (source && onSource) onSource(JSON.parse(source));
 
   const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffer = "";

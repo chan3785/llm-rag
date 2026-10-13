@@ -97,7 +97,7 @@ def test_chat_streams_llama_response_through(client, llama):
     assert res.headers["content-type"].startswith("text/event-stream")
     assert res.content == SSE_BODY
     sent = json.loads(route.calls.last.request.read())
-    assert sent == {**payload, "max_tokens": settings.llm_max_tokens}
+    assert sent == {**settings.generation_defaults(), **payload}
 
 
 def test_chat_passes_through_llama_errors(client, llama):
@@ -164,6 +164,7 @@ def test_chat_with_image_prepends_landmark_classification(client, llama, qdrant)
     assert "'경복궁'(으)로 분류" in messages[0]["content"]
     assert "유사도 0.93, 비슷한 사진 3장 중 2장" in messages[0]["content"]
     assert "명소 정보: 경복궁 info" in messages[0]["content"]
+    assert "모른다고 답하세요" in messages[0]["content"]
     assert messages[1] == image_message()
 
     assert answer_source(res) == {
@@ -186,11 +187,12 @@ def test_chat_with_image_warns_llm_when_landmark_is_unknown(client, llama, qdran
     res = client.post("/v1/chat/completions", json={"messages": [image_message()]})
 
     source = answer_source(res)
-    assert (source["stage"], source["reason"]) == ("vlm", "below_threshold")
+    assert (source["stage"], source["reason"]) == ("rag", "below_threshold")
     assert (source["landmark"], source["candidate"]) == (None, "경복궁")
     system = sent_messages(llm_route)[0]
     assert system["role"] == "system"
-    assert "어느 곳과도 충분히 비슷하지 않습니다" in system["content"]
+    assert "등록된 명소 검색(RAG)에서 일치하는 명소를 찾지 못했습니다." in system["content"]
+    assert "모르면 모른다고 답하세요" in system["content"]
     assert "경복궁" not in system["content"]
 
 
@@ -250,12 +252,18 @@ def test_chat_sends_only_the_latest_image_to_the_vlm(client, llama, qdrant):
     assert second == image_message("second")
 
 
-def test_chat_keeps_client_max_tokens(client, llama, qdrant):
+def test_chat_keeps_client_generation_settings(client, llama, qdrant):
     llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
 
     client.post(
         "/v1/chat/completions",
-        json={"messages": [{"role": "user", "content": "hi"}], "max_tokens": 50},
+        json={
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 50,
+            "temperature": 0.1,
+        },
     )
 
-    assert json.loads(llm_route.calls.last.request.read())["max_tokens"] == 50
+    sent = json.loads(llm_route.calls.last.request.read())
+    assert (sent["max_tokens"], sent["temperature"]) == (50, 0.1)
+    assert sent["presence_penalty"] == settings.llm_presence_penalty

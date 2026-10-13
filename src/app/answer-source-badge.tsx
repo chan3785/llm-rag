@@ -7,7 +7,7 @@ function describe(source: AnswerSource): string {
     case "matched":
       return `${source.landmark} · 유사도 ${fmt(source.score)} (기준 ${fmt(source.threshold)}) · 비슷한 사진 ${source.total}장 중 ${source.votes}장`;
     case "below_threshold":
-      return `등록된 명소 아님 · 가장 가까운 후보 ${source.candidate} ${fmt(source.score)} (기준 ${fmt(source.threshold)})`;
+      return `일치하는 명소 없음 · 가장 가까운 후보 ${source.candidate} ${fmt(source.score)} (기준 ${fmt(source.threshold)})`;
     case "no_reference_data":
       return "등록된 명소 데이터 없음";
     case "retrieval_failed":
@@ -17,7 +17,8 @@ function describe(source: AnswerSource): string {
   }
 }
 
-// Shows which stage decided the answer: RAG (a registered landmark matched) or the VLM alone.
+// Shows which stage decided the answer: RAG (landmark search ran, matched or not) or the VLM
+// alone (no search was possible).
 export function AnswerSourceBadge({ source }: { source: AnswerSource }) {
   const isRag = source.stage === "rag";
   return (

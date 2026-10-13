@@ -18,14 +18,18 @@ Reason = Literal["matched", "below_threshold", "no_image", "no_reference_data", 
 
 @dataclass(frozen=True)
 class AnswerSource:
-    """Which stage decided the answer: RAG (a registered landmark matched) or the VLM alone."""
+    """Which stage decided the answer.
+
+    RAG decides whenever the landmark search ran: it either matched a landmark or concluded
+    the photo is not a registered one. The VLM answers alone only when no search was possible.
+    """
 
     reason: Reason
     classification: Classification | None = None
 
     @property
     def stage(self) -> Literal["rag", "vlm"]:
-        return "rag" if self.reason == "matched" else "vlm"
+        return "rag" if self.reason in ("matched", "below_threshold") else "vlm"
 
     def to_dict(self) -> dict:
         data: dict = {"stage": self.stage, "reason": self.reason}
@@ -115,9 +119,15 @@ def context_message(source: AnswerSource) -> dict | None:
     if c is None:
         return None
     if source.reason == "below_threshold":
+        # Give the model an explicit way to answer; "don't guess" alone makes small models
+        # loop through "it's not X, it's not Y..." until the token limit.
         content = (
-            "사용자가 올린 사진은 등록된 명소 중 어느 곳과도 충분히 비슷하지 않습니다 "
-            f"(최고 유사도 {c.score:.2f}). 특정 명소라고 단정하지 마세요."
+            "등록된 명소 검색(RAG) 결과, 사용자가 올린 사진과 일치하는 명소를 찾지 못했습니다 "
+            f"(최고 유사도 {c.score:.2f}, 기준 {settings.classify_threshold:.2f}).\n"
+            "답변 방법:\n"
+            "1. 첫 문장에서 \"등록된 명소 검색(RAG)에서 일치하는 명소를 찾지 못했습니다.\"라고 말하세요.\n"
+            "2. 장소 이름은 추측하지 마세요. 어디인지 모르면 모른다고 답하세요.\n"
+            "3. 사진에 보이는 풍경(지형, 색, 시간대 등)을 2~3문장으로 설명하고 끝내세요."
         )
     else:
         content = (
@@ -126,4 +136,5 @@ def context_message(source: AnswerSource) -> dict | None:
         )
         if c.description:
             content += f"\n명소 정보: {c.description}"
+        content += "\n명소 정보에 없는 내용을 물으면 추측하지 말고 모른다고 답하세요."
     return {"role": "system", "content": content}

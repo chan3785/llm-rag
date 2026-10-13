@@ -82,8 +82,11 @@ The result is prepended to the conversation as a system message, and returned in
 | `stage` | `reason` | Meaning |
 |---|---|---|
 | `rag` | `matched` | A registered landmark matched; the answer is grounded in its description |
-| `vlm` | `below_threshold` | Closest landmark (`candidate`) scored below the threshold; the VLM answers on its own |
-| `vlm` | `no_image` / `no_reference_data` / `retrieval_failed` | No classification was possible |
+| `rag` | `below_threshold` | RAG found no matching landmark (`candidate` scored below the threshold); the VLM is told to say so and only describe the scene |
+| `vlm` | `no_image` / `no_reference_data` / `retrieval_failed` | No search was possible; the VLM answers on its own |
+
+Generation settings default to Qwen3-VL's recommended vision values plus llama.cpp's DRY
+sampler (`LLM_*` in `.env`); llama-server's own defaults disable every repetition penalty.
 
 Only the latest image in the conversation is sent to the VLM (earlier ones are replaced by a
 placeholder), since small VLMs mix up multiple images and start repeating themselves.

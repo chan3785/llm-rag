@@ -60,7 +60,7 @@ async def chat_completions(
     source = await rag.analyze(messages, request.app.state.clip, qdrant)
     context = rag.context_message(source)
     body["messages"] = [*([context] if context else []), *rag.keep_latest_image(messages)]
-    body.setdefault("max_tokens", settings.llm_max_tokens)
+    body = {**settings.generation_defaults(), **body}
 
     try:
         upstream = await llm.open_chat_stream(body)

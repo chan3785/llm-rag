@@ -65,7 +65,7 @@ uv run python -m scripts.ingest ./data/landmarks            # re-running updates
 uv run python -m scripts.ingest ./data/landmarks --recreate # drop and rebuild the collection
 ```
 
-The first run downloads the CLIP model (~600 MB, cached in `~/.cache/huggingface`).
+The first run downloads the CLIP model (`clip-ViT-L-14`, ~1.7 GB, cached in `~/.cache/huggingface`).
 Ingestion and chat must use the same `CLIP_MODEL`; after changing it, re-ingest with `--recreate`.
 
 ## Classification at chat time

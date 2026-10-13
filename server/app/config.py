@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     qdrant_collection: str = "landmarks"
 
     # Changing the model requires re-ingesting the collection.
-    clip_model: str = "clip-ViT-B-32"
+    clip_model: str = "clip-ViT-L-14"
     # Landmark classification: retrieve the nearest reference images, then compare
     # landmarks by the mean similarity of their closest `classify_per_landmark` images.
     # Raise top_k when many landmarks compete, so each candidate keeps enough images.

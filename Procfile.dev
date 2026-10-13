@@ -1,0 +1,3 @@
+qdrant: docker compose up qdrant
+llm: $LLAMA serve -hf $LLM_MODEL -c $LLM_CTX --port $LLM_PORT
+api: until curl -sf http://localhost:$LLM_PORT/health >/dev/null; do sleep 2; done; cd server && LLAMA_SERVER_URL=http://localhost:$LLM_PORT exec uv run uvicorn app.main:app --port $API_PORT

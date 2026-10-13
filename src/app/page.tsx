@@ -17,6 +17,20 @@ export default function Home() {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  useEffect(() => {
+    // Attach an image pasted anywhere on the page (Ctrl+V / ⌘V).
+    function handlePaste(e: ClipboardEvent) {
+      const file = Array.from(e.clipboardData?.files ?? []).find((f) =>
+        f.type.startsWith("image/"),
+      );
+      if (!file) return; // plain text keeps pasting into the input as usual
+      e.preventDefault();
+      readAsDataUrl(file).then((url) => setImage({ name: file.name, url }));
+    }
+    window.addEventListener("paste", handlePaste);
+    return () => window.removeEventListener("paste", handlePaste);
+  }, []);
+
   async function handleImageChange(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -69,7 +83,7 @@ export default function Home() {
       <section className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
         {messages.length === 0 && (
           <p className="mt-10 text-center text-sm text-gray-500">
-            메시지를 입력하거나 이미지를 업로드하세요.
+            메시지를 입력하거나 이미지를 업로드·붙여넣기 하세요.
           </p>
         )}
         {messages.map((m) => (
@@ -142,7 +156,7 @@ export default function Home() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="메시지를 입력하세요"
+            placeholder="메시지를 입력하거나 이미지를 붙여넣으세요"
             className="min-w-0 flex-1 rounded-full border border-black/15 bg-transparent px-4 py-2 outline-none focus:border-blue-500 dark:border-white/20"
           />
           <button

@@ -267,3 +267,49 @@ def test_chat_keeps_client_generation_settings(client, llama, qdrant):
     sent = json.loads(llm_route.calls.last.request.read())
     assert (sent["max_tokens"], sent["temperature"]) == (50, 0.1)
     assert sent["presence_penalty"] == settings.llm_presence_penalty
+
+
+LOOP = "광화문은 서울의 역사적인 문으로, 한국의 중심부에 위치한 역사적 기념물입니다. "
+
+
+def test_chat_stops_a_looping_answer(client, llama, qdrant):
+    looping = "".join(
+        f"data: {json.dumps({'choices': [{'delta': {'content': LOOP}}]}, ensure_ascii=False)}\n\n"
+        for _ in range(30)
+    ) + "data: [DONE]\n\n"
+    llama.post("/v1/chat/completions").respond(
+        200, content=looping.encode(), headers={"content-type": "text/event-stream"}
+    )
+
+    res = client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+
+    text = "".join(
+        json.loads(line[6:])["choices"][0]["delta"].get("content", "")
+        for line in res.text.splitlines()
+        if line.startswith("data: ") and line != "data: [DONE]"
+    )
+    assert text.count(LOOP) < 5
+    assert text.endswith("(같은 내용이 반복되어 답변을 중단했습니다.)")
+    assert res.text.endswith("data: [DONE]\n\n")
+
+
+def test_chat_cleans_repeated_earlier_answers(client, llama, qdrant):
+    llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
+    history = [
+        {"role": "user", "content": "여기는 어디야?"},
+        {"role": "assistant", "content": LOOP * 20},
+        {"role": "user", "content": "더 설명해줘"},
+    ]
+
+    client.post("/v1/chat/completions", json={"messages": history})
+
+    assert sent_messages(llm_route)[1] == {"role": "assistant", "content": LOOP.strip()}
+
+
+def test_chat_widens_repetition_penalty_window(client, llama, qdrant):
+    llm_route = llama.post("/v1/chat/completions").respond(200, content=SSE_BODY)
+
+    client.post("/v1/chat/completions", json={"messages": [{"role": "user", "content": "hi"}]})
+
+    sent = json.loads(llm_route.calls.last.request.read())
+    assert sent["repeat_last_n"] == sent["dry_penalty_last_n"] == settings.llm_penalty_last_n

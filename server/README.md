@@ -88,6 +88,22 @@ The result is prepended to the conversation as a system message, and returned in
 Generation settings default to Qwen3-VL's recommended vision values plus llama.cpp's DRY
 sampler (`LLM_*` in `.env`); llama-server's own defaults disable every repetition penalty.
 
+### Repetition loops
+
+Small VLMs can fall into loops, and once a looped answer is in the conversation the model
+copies it into every later answer. `app/repetition.py` guards against this:
+
+- **Stream guard:** if the last 50 characters of an answer already appeared 3 times, the stream
+  is ended with "(같은 내용이 반복되어 답변을 중단했습니다.)" and llama-server stops generating.
+- **History cleaning:** earlier assistant answers are de-duplicated sentence by sentence and
+  truncated to `HISTORY_MAX_CHARS` before being sent back.
+- **Penalty window:** `LLM_PENALTY_LAST_N` (default 1024) widens `repeat_last_n` /
+  `dry_penalty_last_n` beyond llama-server's 64 tokens, which misses longer loops.
+
+Trade-off: the presence/DRY penalties also push back on repetition the user asks for
+("repeat this sentence 10 times"), and the model starts substituting odd words; a wider
+window makes that worse. Normal answers are unaffected.
+
 Only the latest image in the conversation is sent to the VLM (earlier ones are replaced by a
 placeholder), since small VLMs mix up multiple images and start repeating themselves.
 

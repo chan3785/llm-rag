@@ -12,6 +12,7 @@ export default function Home() {
   const [error, setError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -57,6 +58,8 @@ export default function Home() {
     setImage(null);
     setError(null);
     setIsStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
       const updateAssistant = (update: (m: Message) => Message) =>
@@ -65,19 +68,43 @@ export default function Home() {
         history,
         (delta) => updateAssistant((m) => ({ ...m, text: m.text + delta })),
         (source) => updateAssistant((m) => ({ ...m, source })),
+        controller.signal,
       );
     } catch (err) {
+      if (controller.signal.aborted) return; // cancelled by "새 대화"
       setError(err instanceof Error ? err.message : String(err));
       setMessages((prev) => prev.filter((m) => m.id !== assistantId || m.text));
     } finally {
-      setIsStreaming(false);
+      // A newer request may already be running after "새 대화"; leave its state alone.
+      if (abortRef.current === controller) {
+        abortRef.current = null;
+        setIsStreaming(false);
+      }
     }
+  }
+
+  function startNewChat() {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setIsStreaming(false);
+    setMessages([]);
+    setInput("");
+    setImage(null);
+    setError(null);
   }
 
   return (
     <main className="mx-auto flex h-dvh w-full max-w-2xl flex-col">
-      <header className="border-b border-black/10 px-4 py-3 dark:border-white/15">
+      <header className="flex items-center justify-between border-b border-black/10 px-4 py-3 dark:border-white/15">
         <h1 className="text-lg font-semibold">Chat</h1>
+        <button
+          type="button"
+          onClick={startNewChat}
+          disabled={messages.length === 0 && !input && !image}
+          className="rounded-full border border-black/15 px-3 py-1.5 text-sm hover:bg-black/5 disabled:opacity-40 dark:border-white/20 dark:hover:bg-white/10"
+        >
+          새 대화
+        </button>
       </header>
 
       <section className="flex-1 space-y-3 overflow-y-auto px-4 py-4">

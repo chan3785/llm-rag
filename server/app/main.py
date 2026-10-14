@@ -8,12 +8,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from qdrant_client import AsyncQdrantClient
 
-from app import db, rag
+from app import db, rag, repetition
 from app.config import settings
 from app.embedding import ClipEmbedder
 from app.llm import LlamaClient, get_llm
 
 logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -49,7 +50,10 @@ async def chat_completions(
     llm: LlamaClient = Depends(get_llm),
     qdrant: AsyncQdrantClient = Depends(db.get_qdrant),
 ):
-    """Relays an OpenAI-style chat request to llama-server, streaming the response as-is.
+    """Relays an OpenAI-style chat request to llama-server, streaming the response back.
+
+    Streams are cut short if the answer starts repeating itself, and earlier answers are
+    de-duplicated before being sent back, so one loop doesn't spread to later answers.
 
     If the conversation contains an image, it is classified against the landmarks in Qdrant
     and the result is prepended as a system message. Which stage decided the answer (RAG or
@@ -59,7 +63,8 @@ async def chat_completions(
     messages = body.get("messages", [])
     source = await rag.analyze(messages, request.app.state.clip, qdrant)
     context = rag.context_message(source)
-    body["messages"] = [*([context] if context else []), *rag.keep_latest_image(messages)]
+    history = repetition.clean_history(messages, settings.history_max_chars)
+    body["messages"] = [*([context] if context else []), *rag.keep_latest_image(history)]
     body = {**settings.generation_defaults(), **body}
 
     try:
@@ -70,17 +75,26 @@ async def chat_completions(
             detail=f"Cannot reach llama-server ({settings.llama_server_url}): {exc.__class__.__name__}",
         )
 
+    content_type = upstream.headers.get("content-type", "application/json")
+
     async def relay():
         try:
-            async for chunk in upstream.aiter_raw():
-                yield chunk
+            if upstream.is_success and content_type.startswith("text/event-stream"):
+                guard = repetition.RepetitionGuard()
+                async for chunk in repetition.guard_sse(upstream.aiter_raw(), guard):
+                    yield chunk
+                if guard.tripped:
+                    logger.warning("Stopped a repeating answer after %d chars", len(guard.text))
+            else:
+                async for chunk in upstream.aiter_raw():
+                    yield chunk
         finally:
             await upstream.aclose()
 
     return StreamingResponse(
         relay(),
         status_code=upstream.status_code,
-        media_type=upstream.headers.get("content-type", "application/json"),
+        media_type=content_type,
         # ensure_ascii keeps the header value ASCII-only (Korean landmark names are escaped).
         headers={"X-Answer-Source": json.dumps(source.to_dict(), ensure_ascii=True)},
     )

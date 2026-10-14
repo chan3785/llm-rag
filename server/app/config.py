@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     llm_top_k: int = 20
     llm_presence_penalty: float = 1.5
     llm_dry_multiplier: float = 0.8
+    # How far back the repetition penalties look. llama-server's default (64 tokens) misses
+    # loops whose period is longer, e.g. a repeated 90-token paragraph.
+    llm_penalty_last_n: int = 1024
+    # Earlier assistant answers longer than this are truncated before being sent back.
+    history_max_chars: int = 1500
 
     def generation_defaults(self) -> dict:
         return {
@@ -26,6 +31,8 @@ class Settings(BaseSettings):
             "top_k": self.llm_top_k,
             "presence_penalty": self.llm_presence_penalty,
             "dry_multiplier": self.llm_dry_multiplier,
+            "repeat_last_n": self.llm_penalty_last_n,
+            "dry_penalty_last_n": self.llm_penalty_last_n,
         }
 
     qdrant_url: str = "http://localhost:6333"
